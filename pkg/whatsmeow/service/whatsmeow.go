@@ -76,6 +76,23 @@ type clientVersion struct {
 	Patch int
 }
 
+// store.DeviceProps.Version só descreve o aparelho anunciado no pareamento.
+// O handshake usa a versão global do pacote store, que só muda via
+// store.SetWAVersion. Sem esta chamada a versão buscada do WhatsApp Web era
+// descartada e o WhatsApp recusava a conexão com "Client outdated (405)".
+// waVersion é global e StartClient roda em goroutine por instância, então a
+// escrita é serializada.
+var waVersionMu sync.Mutex
+
+func applyWAVersion(v clientVersion) {
+	if v.Major == 0 || v.Minor == 0 || v.Patch == 0 {
+		return
+	}
+	waVersionMu.Lock()
+	defer waVersionMu.Unlock()
+	store.SetWAVersion(store.WAVersionContainer{uint32(v.Major), uint32(v.Minor), uint32(v.Patch)})
+}
+
 type whatsmeowService struct {
 	instanceRepository instance_repository.InstanceRepository
 	authDB             *sql.DB
@@ -402,6 +419,8 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 			store.DeviceProps.Version.Tertiary = proto.Uint32(uint32(version.Patch))
 		}
 	}
+
+	applyWAVersion(version)
 
 	// 🔒 FIX: Sempre criar logger, mesmo que WaDebug esteja vazio
 	// Usar "INFO" como nível mínimo para garantir que logs importantes apareçam
