@@ -82,6 +82,28 @@ type clientVersion struct {
 // descartada e o WhatsApp recusava a conexão com "Client outdated (405)".
 // waVersion é global e StartClient roda em goroutine por instância, então a
 // escrita é serializada.
+var (
+	sharedContainersMu sync.Mutex
+	sharedContainers   = map[string]*sqlstore.Container{}
+)
+
+// getSharedContainer devolve sempre o mesmo container para o mesmo banco,
+// em vez de abrir um pool novo a cada reconexão de instância.
+func getSharedContainer(dialect, dsn string, log waLog.Logger) (*sqlstore.Container, error) {
+	sharedContainersMu.Lock()
+	defer sharedContainersMu.Unlock()
+	key := dialect + "|" + dsn
+	if c, ok := sharedContainers[key]; ok && c != nil {
+		return c, nil
+	}
+	c, err := sqlstore.New(context.Background(), dialect, dsn, log)
+	if err != nil {
+		return nil, err
+	}
+	sharedContainers[key] = c
+	return c, nil
+}
+
 var waVersionMu sync.Mutex
 
 func applyWAVersion(v clientVersion) {
@@ -333,21 +355,18 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 
 	var container *sqlstore.Container
 
+	// FIX GTR: reaproveita um único container (pool de conexões) por banco.
+	// Antes, cada reconexão criava um sqlstore.New novo sem fechar o anterior,
+	// e o Postgres estourava o limite ("too many clients already").
+	var dbLog waLog.Logger
 	if w.config.WaDebug != "" {
-		dbLog := waLog.Stdout("Database", w.config.WaDebug, true)
-		if w.config.PostgresAuthDB != "" {
-			container, err = sqlstore.New(context.Background(), "postgres", w.config.PostgresAuthDB, dbLog)
-		} else {
-			dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
-			container, err = sqlstore.New(context.Background(), "sqlite", dsn, dbLog)
-		}
+		dbLog = waLog.Stdout("Database", w.config.WaDebug, true)
+	}
+	if w.config.PostgresAuthDB != "" {
+		container, err = getSharedContainer("postgres", w.config.PostgresAuthDB, dbLog)
 	} else {
-		if w.config.PostgresAuthDB != "" {
-			container, err = sqlstore.New(context.Background(), "postgres", w.config.PostgresAuthDB, nil)
-		} else {
-			dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
-			container, err = sqlstore.New(context.Background(), "sqlite", dsn, nil)
-		}
+		dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
+		container, err = getSharedContainer("sqlite", dsn, dbLog)
 	}
 
 	if err != nil {

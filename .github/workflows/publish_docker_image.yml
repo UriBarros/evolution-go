@@ -40,6 +40,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/uribarros/evolution-go:${{ steps.version.outputs.version }}-wafix
+            ghcr.io/uribarros/evolution-go:${{ steps.version.outputs.version }}-dbfix
             ghcr.io/uribarros/evolution-go:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
